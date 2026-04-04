@@ -1,15 +1,15 @@
 package com.cosmicpulse.heliophysics_engine.controller;
 
+import com.cosmicpulse.heliophysics_engine.model.SolarEvent;
 import com.cosmicpulse.heliophysics_engine.model.TechHealthScore;
 import com.cosmicpulse.heliophysics_engine.service.SolarDataService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
-import java.util.Map;
+import java.util.*;
+import java.util.stream.Collectors;
 
 @Slf4j
 @RestController
@@ -19,11 +19,6 @@ public class TechHealthController {
 
     private final SolarDataService solarDataService;
 
-    /**
-     * Primary endpoint for the React Native app.
-     * Returns the current Tech Health scores from Redis cache.
-     * GET /api/v1/tech-health
-     */
     @GetMapping("/tech-health")
     public ResponseEntity<?> getTechHealth() {
         return solarDataService.getCurrentTechHealth()
@@ -34,23 +29,44 @@ public class TechHealthController {
             )));
     }
 
-    /**
-     * Quick status check — useful for the app's home screen header.
-     * GET /api/v1/status
-     */
     @GetMapping("/status")
     public ResponseEntity<?> getStatus() {
         return solarDataService.getCurrentTechHealth()
             .map(score -> ResponseEntity.ok(Map.of(
-                "stormCategory",  score.stormCategory().name(),
-                "kpIndex",        score.kpIndex(),
-                "hasAlert",       score.hasActiveAlert(),
-                "alertMessage",   score.alertMessage()
+                "stormCategory", score.stormCategory().name(),
+                "kpIndex",       score.kpIndex(),
+                "hasAlert",      score.hasActiveAlert(),
+                "alertMessage",  score.alertMessage()
             )))
             .orElseGet(() -> ResponseEntity.ok(Map.of(
                 "stormCategory", "UNKNOWN",
-                "hasAlert",       false,
-                "alertMessage",   "Awaiting first data poll"
+                "hasAlert",      false,
+                "alertMessage",  "Awaiting first data poll"
             )));
+    }
+
+    @GetMapping("/history")
+    public ResponseEntity<?> getHistory() {
+        List<SolarEvent> events = solarDataService.getLast24Hours();
+
+        if (events.isEmpty()) {
+            return ResponseEntity.ok(List.of());
+        }
+
+        List<Map<String, Object>> result = events.stream().map(e -> {
+            Map<String, Object> point = new LinkedHashMap<>();
+            point.put("time",  e.getTime().toString());
+            point.put("kp",    e.getKpIndex());
+            point.put("label", e.getTime().toString().substring(11, 16));
+            point.put("category", e.getStormCategory());
+            return point;
+        }).collect(Collectors.toList());
+
+        return ResponseEntity.ok(result);
+    }
+
+    @GetMapping("/cme-events")
+    public ResponseEntity<?> getCmeEvents() {
+        return ResponseEntity.ok(solarDataService.getRecentCmeEvents());
     }
 }

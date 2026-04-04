@@ -1,8 +1,7 @@
 package com.cosmicpulse.heliophysics_engine.service;
 
-import com.cosmicpulse.heliophysics_engine.model.CmeEvent;
-import com.cosmicpulse.heliophysics_engine.model.KIndexReading;
-import com.cosmicpulse.heliophysics_engine.model.TechHealthScore;
+import com.cosmicpulse.heliophysics_engine.model.*;
+import com.cosmicpulse.heliophysics_engine.repository.SolarEventRepository;
 import com.cosmicpulse.heliophysics_engine.scoring.TechHealthScoringService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -13,8 +12,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
-import java.util.Optional;
+import java.util.*;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 @Slf4j
 @Service
@@ -26,6 +27,8 @@ public class SolarDataService {
     private final WebClient noaaWebClient;
     private final TechHealthScoringService scoringService;
     private final ReactiveRedisTemplate<String, TechHealthScore> redisTemplate;
+    private final SolarEventRepository solarEventRepository;
+    private final List<CmeEvent> recentCmeEvents = new CopyOnWriteArrayList<>();
 
     @Value("${nasa.api.key}")
     private String nasaApiKey;
@@ -33,11 +36,13 @@ public class SolarDataService {
     public SolarDataService(
         @Qualifier("noaaWebClient") WebClient noaaWebClient,
         TechHealthScoringService scoringService,
-        ReactiveRedisTemplate<String, TechHealthScore> redisTemplate
+        ReactiveRedisTemplate<String, TechHealthScore> redisTemplate,
+        SolarEventRepository solarEventRepository
     ) {
-        this.noaaWebClient  = noaaWebClient;
-        this.scoringService = scoringService;
-        this.redisTemplate  = redisTemplate;
+        this.noaaWebClient        = noaaWebClient;
+        this.scoringService       = scoringService;
+        this.redisTemplate        = redisTemplate;
+        this.solarEventRepository = solarEventRepository;
     }
 
     @Scheduled(fixedDelay = 180_000, initialDelay = 5_000)
@@ -56,12 +61,26 @@ public class SolarDataService {
                     .set(REDIS_KEY_TECH_HEALTH, score, TECH_HEALTH_TTL)
                     .thenReturn(score)
             )
-            .doOnNext(score -> log.info(
-                "Tech Health cached — GPS: {}%, Satellite: {}%, Radio: {}%",
-                score.gpsReliabilityScore(),
-                score.satelliteInternetScore(),
-                score.radioClarityScore()
-            ))
+            .doOnNext(score -> {
+                log.info("Tech Health cached — GPS: {}%, Satellite: {}%, Radio: {}%",
+                    score.gpsReliabilityScore(), score.satelliteInternetScore(), score.radioClarityScore());
+                // Save to TimescaleDB
+                try {
+                    SolarEvent event = SolarEvent.builder()
+                        .time(score.timestamp())
+                        .kpIndex(score.kpIndex())
+                        .stormCategory(score.stormCategory().name())
+                        .gpsScore(score.gpsReliabilityScore())
+                        .satelliteScore(score.satelliteInternetScore())
+                        .radioScore(score.radioClarityScore())
+                        .source("NOAA_SWPC")
+                        .build();
+                    solarEventRepository.save(event);
+                    log.info("Solar event saved to TimescaleDB");
+                } catch (Exception e) {
+                    log.error("Failed to save solar event: {}", e.getMessage());
+                }
+            })
             .doOnError(e -> log.error("NOAA poll failed: {}", e.getMessage()))
             .onErrorComplete()
             .subscribe();
@@ -85,7 +104,11 @@ public class SolarDataService {
             .retrieve()
             .bodyToFlux(CmeEvent.class)
             .collectList()
-            .doOnNext(events -> log.info("DONKI returned {} CME events in last 7 days", events.size()))
+            .doOnNext(events -> {
+                log.info("DONKI returned {} CME events", events.size());
+                recentCmeEvents.clear();
+                recentCmeEvents.addAll(events);
+            })
             .doOnError(e -> log.error("DONKI poll failed: {}", e.getMessage()))
             .onErrorComplete()
             .subscribe();
@@ -97,5 +120,14 @@ public class SolarDataService {
                 .get(REDIS_KEY_TECH_HEALTH)
                 .block(Duration.ofSeconds(2))
         );
+    }
+
+    public List<SolarEvent> getLast24Hours() {
+        Instant since = Instant.now().minus(Duration.ofHours(24));
+        return solarEventRepository.findByTimeAfterOrderByTimeAsc(since);
+    }
+
+    public List<CmeEvent> getRecentCmeEvents() {
+        return Collections.unmodifiableList(recentCmeEvents);
     }
 }
