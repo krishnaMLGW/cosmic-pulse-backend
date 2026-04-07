@@ -1,13 +1,9 @@
 spring:
   application:
     name: heliophysics-engine
-
   datasource:
     url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/cosmicpulse}
-    username: ${DATABASE_USER:postgres}
-    password: ${DATABASE_PASSWORD:postgres}
     driver-class-name: org.postgresql.Driver
-
   jpa:
     hibernate:
       ddl-auto: update
@@ -15,20 +11,16 @@ spring:
     properties:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
-
   data:
     redis:
       url: ${REDIS_URL:redis://localhost:6379}
-
 nasa:
   api:
     key: ${NASA_API_KEY:cFVWJWrRe4LnLCrV51mkY89TJoYlsBDW3ZEEUNJ6}
     base-url: https://api.nasa.gov
-
 noaa:
   api:
     base-url: https://services.swpc.noaa.gov
-
 management:
   endpoints:
     web:
@@ -37,7 +29,8 @@ management:
   endpoint:
     health:
       show-details: always
-
 logging:
   level:
     com.cosmicpulse: INFO
+server:
+  port: ${PORT:8080}
