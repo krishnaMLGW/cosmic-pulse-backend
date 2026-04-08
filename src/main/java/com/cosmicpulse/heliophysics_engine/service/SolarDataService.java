@@ -4,6 +4,7 @@ import com.cosmicpulse.heliophysics_engine.model.*;
 import com.cosmicpulse.heliophysics_engine.repository.SolarEventRepository;
 import com.cosmicpulse.heliophysics_engine.scoring.TechHealthScoringService;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
@@ -27,8 +28,10 @@ public class SolarDataService {
     private final WebClient noaaWebClient;
     private final TechHealthScoringService scoringService;
     private final ReactiveRedisTemplate<String, TechHealthScore> redisTemplate;
-    private final SolarEventRepository solarEventRepository;
     private final List<CmeEvent> recentCmeEvents = new CopyOnWriteArrayList<>();
+
+    @Autowired(required = false)
+    private SolarEventRepository solarEventRepository;
 
     @Value("${nasa.api.key}")
     private String nasaApiKey;
@@ -36,13 +39,11 @@ public class SolarDataService {
     public SolarDataService(
         @Qualifier("noaaWebClient") WebClient noaaWebClient,
         TechHealthScoringService scoringService,
-        ReactiveRedisTemplate<String, TechHealthScore> redisTemplate,
-        SolarEventRepository solarEventRepository
+        ReactiveRedisTemplate<String, TechHealthScore> redisTemplate
     ) {
-        this.noaaWebClient        = noaaWebClient;
-        this.scoringService       = scoringService;
-        this.redisTemplate        = redisTemplate;
-        this.solarEventRepository = solarEventRepository;
+        this.noaaWebClient  = noaaWebClient;
+        this.scoringService = scoringService;
+        this.redisTemplate  = redisTemplate;
     }
 
     @Scheduled(fixedDelay = 180_000, initialDelay = 5_000)
@@ -64,21 +65,22 @@ public class SolarDataService {
             .doOnNext(score -> {
                 log.info("Tech Health cached — GPS: {}%, Satellite: {}%, Radio: {}%",
                     score.gpsReliabilityScore(), score.satelliteInternetScore(), score.radioClarityScore());
-                // Save to TimescaleDB
-                try {
-                    SolarEvent event = SolarEvent.builder()
-                        .time(score.timestamp())
-                        .kpIndex(score.kpIndex())
-                        .stormCategory(score.stormCategory().name())
-                        .gpsScore(score.gpsReliabilityScore())
-                        .satelliteScore(score.satelliteInternetScore())
-                        .radioScore(score.radioClarityScore())
-                        .source("NOAA_SWPC")
-                        .build();
-                    solarEventRepository.save(event);
-                    log.info("Solar event saved to TimescaleDB");
-                } catch (Exception e) {
-                    log.error("Failed to save solar event: {}", e.getMessage());
+                if (solarEventRepository != null) {
+                    try {
+                        SolarEvent event = SolarEvent.builder()
+                            .time(score.timestamp())
+                            .kpIndex(score.kpIndex())
+                            .stormCategory(score.stormCategory().name())
+                            .gpsScore(score.gpsReliabilityScore())
+                            .satelliteScore(score.satelliteInternetScore())
+                            .radioScore(score.radioClarityScore())
+                            .source("NOAA_SWPC")
+                            .build();
+                        solarEventRepository.save(event);
+                        log.info("Solar event saved to TimescaleDB");
+                    } catch (Exception e) {
+                        log.error("Failed to save solar event: {}", e.getMessage());
+                    }
                 }
             })
             .doOnError(e -> log.error("NOAA poll failed: {}", e.getMessage()))
@@ -123,6 +125,7 @@ public class SolarDataService {
     }
 
     public List<SolarEvent> getLast24Hours() {
+        if (solarEventRepository == null) return List.of();
         Instant since = Instant.now().minus(Duration.ofHours(24));
         return solarEventRepository.findByTimeAfterOrderByTimeAsc(since);
     }
